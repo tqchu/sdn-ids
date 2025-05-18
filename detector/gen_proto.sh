@@ -1,0 +1,1 @@
+python -m grpc_tools.protoc -I/home/truongchu/Academic/Graduation_Thesis/Project/controller/collector/goflow2/pb   --python_out=.    flow.proto

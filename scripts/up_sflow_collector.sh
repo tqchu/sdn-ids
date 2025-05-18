@@ -1,0 +1,1 @@
+docker run -d --name goflow2 --network kafka_default -p 6343:6343/udp goflow2
