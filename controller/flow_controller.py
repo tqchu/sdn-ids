@@ -23,33 +23,6 @@ class SDNIDSController(app_manager.RyuApp):
         self.datapaths = {}
         self.offset = 0
         self.current_len = 0
-        with open(
-                '/home/truongchu/Academic/Graduation_Thesis/Project/AI/detector/dataset/InSDN_DatasetCSV/mlp_model.pkl',
-                'rb') as f:
-            self.model = pickle.load(f)
-
-        # self.monitor_thread = hub.spawn(self._monitor)
-
-        with open('/home/truongchu/Academic/Graduation_Thesis/Project/AI/detector/dataset/InSDN_DatasetCSV/scaler.pkl',
-                  'rb') as f:
-            self.scaler = pickle.load(f)
-        # s
-        # (Model loading and logging will be shown in later sections)
-
-    # def _monitor(self):
-    #     while True:
-    #         for dp in self.datapaths.values():
-    #             self._request_stats(dp)
-    #         hub.sleep(5)
-    #
-    #         self.flow_predict()
-
-    # def _request_stats(self, datapath):
-    #     self.logger.debug('send stats request: %016x', datapath.id)
-    #     parser = datapath.ofproto_parser
-    #
-    #     req = parser.OFPFlowStatsRequest(datapath, match = parser.OFPMatch(eth_type=0x0800, ip_proto=1))
-    #     datapath.send_msg(req)
 
     @set_ev_cls(ofp_event.EventOFPStateChange,
                 [MAIN_DISPATCHER, DEAD_DISPATCHER])
@@ -63,44 +36,6 @@ class SDNIDSController(app_manager.RyuApp):
             if datapath.id in self.datapaths:
                 self.logger.debug('unregister datapath: %016x', datapath.id)
                 del self.datapaths[datapath.id]
-
-    # @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER)
-    # def _flow_stats_reply_handler(self, ev):
-    #
-    #     file0 = open("PredictFlowStatsfile.csv", "a")
-    #     # file0.write(
-    #     #     'Flow Duration,Active Mean,Idle Mean,Tot Fwd Pkts,TotLen Fwd Pkts,Flow Pkts/s,Flow Byts/s\n')
-    #     body = ev.msg.body
-    #
-    #     for stat in body:
-    #         duration_mseconds = stat.duration_sec * 1e6
-    #         try:
-    #             packet_count_per_second = stat.packet_count / stat.duration_sec
-    #         except:
-    #             packet_count_per_second = 0
-    #
-    #         try:
-    #             byte_count_per_second = stat.byte_count / stat.duration_sec
-    #         except:
-    #             byte_count_per_second = 0
-    #
-    #         # file0.write("{},{},{},{}, {},{},{},{},{},{},{},{},{}\n"
-    #         #             .format(timestamp, ev.msg.datapath.id,
-    #         #                     stat.duration_sec, stat.duration_nsec,
-    #         #                     stat.idle_timeout, stat.hard_timeout,
-    #         #                     stat.flags, stat.packet_count, stat.byte_count,
-    #         #                     packet_count_per_second, packet_count_per_nsecond,
-    #         #                     byte_count_per_second, byte_count_per_nsecond))
-    #         file0.write("{},{},{},{}, {},{},{}\n"
-    #                     .format(duration_mseconds, stat.hard_timeout,
-    #                             stat.idle_timeout, stat.packet_count, stat.byte_count,
-    #                             packet_count_per_second,
-    #                             byte_count_per_second))
-    #
-    #     self.current_len = len(body)
-    #
-    #     file0.close()
-        # (Here we can process the flow statistics as needed, e.g., logging or updating a database)
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -219,53 +154,6 @@ class SDNIDSController(app_manager.RyuApp):
         flow.update(direction, pkt_len, tcp_flags, now, tcp_win)
 
         self.logger.info("Flow features updated: %s", flow.get_features())
-        # features = {
-        #     "Src Port": 38694,
-        #     "Dst Port": 4444,
-        #     "Flow Duration": 269709,
-        #     "Tot Fwd Pkts": 4,
-        #     "Tot Bwd Pkts": 5,
-        #     "TotLen Fwd Pkts": 48,
-        #     "TotLen Bwd Pkts": 23,
-        #     "Fwd Pkt Len Max": 30,
-        #     "Fwd Pkt Len Min": 0,
-        #     "Fwd Pkt Len Mean": 12,
-        #     "Fwd Pkt Len Std": 14.69693846,
-        #     "Bwd Pkt Len Max": 23,
-        #     "Bwd Pkt Len Min": 0,
-        #     "Bwd Pkt Len Mean": 4.6,
-        #     "Bwd Pkt Len Std": 10.2859127,
-        #     "Flow Byts/s": 263.2466844,
-        #     "Flow Pkts/s": 33.36929802,
-        # }
-
-        # features_col = ["Src Port",
-        #                 "Dst Port",
-        #                 # "Protocol",
-        #                 "Flow Duration",
-        #                 "Tot Fwd Pkts",
-        #                 "Tot Bwd Pkts",
-        #                 "TotLen Fwd Pkts",
-        #                 "TotLen Bwd Pkts",
-        #                 "Fwd Pkt Len Max",
-        #                 "Fwd Pkt Len Min",
-        #                 "Fwd Pkt Len Mean",
-        #                 "Fwd Pkt Len Std",
-        #                 "Bwd Pkt Len Max",
-        #                 "Bwd Pkt Len Min",
-        #                 "Bwd Pkt Len Mean",
-        #                 "Bwd Pkt Len Std",
-        #                 "Flow Byts/s",
-        #                 "Flow Pkts/s"]
-        #
-        # X = pd.DataFrame([features], columns=features_col)
-        # X = self.scaler.transform(X)
-        # y = self.model.predict(X)
-        #
-        # self.logger.info("Prediction %s", y)
-        #
-        # if y != 'Normal':
-        #     self.logger.error("Attack Detected: %s", y)
 
         self.logger.info("Processing duration, %s", time.time() - start_time)
 
@@ -279,45 +167,3 @@ class SDNIDSController(app_manager.RyuApp):
         }
         return proto_map.get(protocol, 'OTHER')
 
-    def flow_predict(self):
-        try:
-            predict_flow_dataset = pd.read_csv('PredictFlowStatsfile.csv')
-
-            features_col = ["Flow Duration", "Active Mean", "Idle Mean", "Tot Fwd Pkts", "TotLen Fwd Pkts",
-                            "Flow Pkts/s", "Flow Byts/s"]
-
-            if self.current_len ==0:
-                return
-
-            self.logger.info("Current len %d", self.current_len)
-            self.logger.info("Current offset %d", self.offset)
-
-            next_offset = min(self.offset + 100, len(predict_flow_dataset))
-
-            features = predict_flow_dataset[features_col].iloc[self.offset:next_offset]
-
-            self.logger.info("X %s", features)
-
-            X = self.scaler.transform(features)
-            y = self.model.predict(X)
-
-            self.logger.info("Prediction %s", y)
-
-            for idx, yi in enumerate(y):
-                if yi != 'Normal':
-                    self.logger.error("Attack Detected: %s", yi)
-                    file0 = open("AttackDetected.csv", "a")
-                    xi = predict_flow_dataset.iloc[idx]
-
-                    file0.write("{},{},{},{}, {},{},{},{}\n"
-                                .format(xi["Flow Duration"], xi["Active Mean"],
-                                        xi["Idle Mean"], xi["Tot Fwd Pkts"], xi["TotLen Fwd Pkts"],
-                                        xi["Flow Pkts/s"], xi["Flow Byts/s"], yi))
-
-            self.logger.info("------------------------------------------------------------------------------")
-            self.offset = next_offset
-        except Exception as e:
-            self.logger.error("Error in flow prediction: %s", str(e))
-            self.logger.error("Traceback: %s", traceback.format_exc())
-
-            pass
