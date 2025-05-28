@@ -52,6 +52,6 @@ consumer_container_id=$(docker run -d --name ml_detector   --network sdn-ids_def
 echo "ML Detector container ID: $consumer_container_id"
 
 sudo ovs-vsctl -- --id=@sflow create sflow agent=ens33     target=\"localhost:6343\" sampling=4 polling=10     -- set bridge br0 sflow=@sflow
-export PYTHONPATH=$(pwd):$PYTHONPATH
+export PYTHONPATH=$(pwd):${PYTHONPATH:-}
 #ryu-manager controller.traffic_logger
 ryu-manager  --wsapi-port 8082 controller.flow_controller ryu.app.ofctl_rest
