@@ -69,6 +69,7 @@ export PYTHONPATH=$(pwd):$PYTHONPATH
 #ryu-manager controller.traffic_logger
 ryu-manager  --wsapi-port 8082 controller.flow_controller ryu.app.ofctl_rest
 
+ping -c 1 10.50.50.128 > /dev/null 2>&1
 # up the consumer
 # up the sflow collector
 

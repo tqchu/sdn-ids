@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import csv, ipaddress, json, os, signal, sys
 import pickle
+from collections import defaultdict
+from symbol import flow_stmt
 
 from kafka import KafkaConsumer
 import google.protobuf.internal.decoder as _dec
@@ -49,6 +51,14 @@ consumer = KafkaConsumer(
 )
 
 
+def get_group_id(ip_dst: str, dst_port: int, proto: int):
+    return f"{str(ip_dst)}_{str(dst_port)}_{str(proto)}"
+
+
+def get_flow_id(ip_src: str, src_port: int, ip_dst: str, dst_port: int, proto: int):
+    return f"{str(ip_src)}_{str(src_port)}_{str(ip_dst)}_{str(dst_port)}_{str(proto)}"
+
+
 def strip_len(buf: bytes):
     n, p = _dec._DecodeVarint(buf, 0)
     return buf[p:p + n]
@@ -83,6 +93,119 @@ signal.signal(signal.SIGINT, sigterm);
 signal.signal(signal.SIGTERM, sigterm)
 
 
+class GroupFlowCached:
+    """Data structure to track features for a single bidirectional flow."""
+
+    def __init__(self, group_id, start_time, forward_src, dst_ip, src_port, dst_port, protocol):
+        self.group_id = group_id
+        self.last_seen = start_time
+        self.start_time = start_time
+        self.forward_src = forward_src
+        self.tot_fwd_pkts = 0
+        self.tot_bwd_pkts = 0
+        self.tot_fwd_bytes = 0
+        self.tot_bwd_bytes = 0
+        self.fwd_lens = []  # will hold lengths of forward packets
+        self.bwd_lens = []  # will hold lengths of forward packets
+        self.last_seen_fwd = start_time
+        self.last_seen_bwd = start_time
+        self.flow_packets = 0
+        self.src_ips = []
+        self.dst_ip = dst_ip
+        self.src_port = src_port
+        self.dst_port = dst_port
+        self.protocol = protocol
+        self.src_ip_counts = 0
+        self.flow_count = 0
+        self.tot_pkts = 0
+        self.tot_bytes = 0
+        self.flow_ids = []
+
+    def update(self, src_ip, src_port, direction, pkt_len, tcp_flags, timestamp, tcp_win=None):
+        self.flow_packets += 1
+        # Update flow last seen and duration
+        self.last_seen = timestamp
+
+        if (src_ip, src_port) not in self.src_ips and direction == "fwd":
+            self.src_ip_counts += 1
+            self.src_ips.append((src_ip, src_port))
+            self.flow_count += 1
+            self.flow_ids.append(get_flow_id(src_ip, src_port, self.dst_ip, self.dst_port, self.protocol))
+
+        self.tot_pkts += 1
+        self.tot_bytes += pkt_len
+
+        if direction == 'fwd':
+            self.tot_fwd_pkts += 1
+            self.tot_fwd_bytes += pkt_len
+            self.fwd_lens.append(pkt_len)
+            self.last_seen_fwd = timestamp
+        else:  # 'bwd' direction
+            self.tot_bwd_pkts += 1
+            self.tot_bwd_bytes += pkt_len
+            self.bwd_lens.append(pkt_len)
+            self.last_seen_bwd = timestamp
+
+    def get_features(self):
+        duration = (self.last_seen - self.start_time) // 1e3  # convert to microseconds if needed
+
+        pkts_per_sec = (self.flow_packets / (duration / 1e6)) if duration > 0 else 0
+        # pkts_per_sec = (self.flow_packets / 10)
+
+        bytes_per_sec = ((self.tot_fwd_bytes + self.tot_bwd_bytes) / (duration / 1e6)) if duration > 0 else 0
+        # bytes_per_sec = ((self.tot_fwd_bytes + self.tot_bwd_bytes) / 10)
+
+        pkts_per_src_ip = self.tot_pkts/ self.src_ip_counts if self.src_ip_counts > 0 else 0
+        bytes_per_src_ip = self.tot_bytes / self.src_ip_counts if self.src_ip_counts > 0 else 0
+        return {
+            "total_src_ips": self.src_ip_counts,
+            "flow_count": self.tot_pkts,
+            "Tot Fwd Pkts": self.tot_fwd_pkts,
+            "Tot Bwd Pkts": self.tot_bwd_pkts,
+            "TotLen Fwd Pkts": self.tot_fwd_bytes,
+            "TotLen Bwd Pkts": self.tot_bwd_bytes,
+            "Flow Pkts/s": pkts_per_sec,
+            "Flow Byts/s": bytes_per_sec,
+            # "Flow Duration": duration,
+            "Flow Duration": 5,
+            "total_pkts": self.tot_pkts,
+            "total_bytes": self.tot_bytes,
+            "pkts_per_src_ip": pkts_per_src_ip,
+            "bytes_per_src_ip": bytes_per_src_ip,
+
+            "Group ID": self.group_id,
+            "Src IPs": self.src_ips,
+            "Src Port": self.src_port,
+            "Dst IP": self.dst_ip,
+            "Dst Port": self.dst_port,
+            "Protocol": self.protocol,
+
+            "Timestamp": self.last_seen,
+
+            # "total_src_ips": 1,
+            # "flow_count": 45,
+            # "Tot Fwd Pkts": 45,
+            # "Tot Bwd Pkts": 45,
+            # "TotLen Fwd Pkts": 0.0,
+            # "TotLen Bwd Pkts": 0.0,
+            # "Flow Pkts/s": 2000000.0,
+            # "Flow Byts/s": 0.0,
+            # "Flow Duration": 1.0,
+            # "total_pkts": 45,
+            # "total_bytes": 0.0,
+            # "pkts_per_src_ip": 45.0,
+            # "bytes_per_src_ip": 0.0,
+            # "Group ID": self.group_id,
+            # "Src IPs": self.src_ips,
+            # "Src Port": self.src_port,
+            # "Dst IP": self.dst_ip,
+            # "Dst Port": self.dst_port,
+            # "Protocol": self.protocol,
+            #
+            # "Timestamp": self.last_seen,
+        }
+
+
 class FlowCached:
     """Data structure to track features for a single bidirectional flow."""
 
@@ -115,31 +238,12 @@ class FlowCached:
             self.tot_fwd_pkts += 1
             self.tot_fwd_bytes += pkt_len
             self.fwd_lens.append(pkt_len)
-            # Inter-arrival time for forward packets
-            # if self.tot_fwd_pkts > 1:  # if not the first fwd packet
-            #     iat = timestamp - self.last_seen_fwd
-            #     self.fwd_iat.append(iat)
             self.last_seen_fwd = timestamp
-            # TCP flag specifics for forward packet
-            # if tcp_flags:
-            #     # Check each relevant flag bit (using TCP flag bit values)
-            #     if tcp_flags & 0x08:  # PSH flag bit (0x08) set
-            #         self.fwd_psh_count += 1
-            #     if tcp_flags & 0x20:  # URG flag bit (0x20) set
-            #         self.fwd_urg_count += 1
         else:  # 'bwd' direction
             self.tot_bwd_pkts += 1
             self.tot_bwd_bytes += pkt_len
             self.bwd_lens.append(pkt_len)
-            # if self.tot_bwd_pkts > 1:
-            #     iat = timestamp - self.last_seen_bwd
-            #     self.bwd_iat.append(iat)
             self.last_seen_bwd = timestamp
-            # if tcp_flags:
-            #     if tcp_flags & 0x08:
-            #         self.bwd_psh_count += 1
-            #     if tcp_flags & 0x20:
-            #         self.bwd_urg_count += 1
 
     def get_features(self):
         duration = (self.last_seen - self.start_time) // 1e3  # convert to microseconds if needed
@@ -185,119 +289,70 @@ class FlowCached:
             #
             "Flow Byts/s": bytes_per_sec,
             "Flow Pkts/s": pkts_per_sec,
-            #
-            # "Flow IAT Mean":,
-            # "Flow IAT Std":,
-            # "Flow IAT Max":,
-            # "Flow IAT Min":,
-            # "Fwd IAT Tot":,
-            #
-            # "Fwd IAT Mean":,
-            # "Fwd IAT Std":,
-            # "Fwd IAT Max":,
-            # "Fwd IAT Min":,
-            #
-            # "Bwd IAT Tot":,
-            # "Bwd IAT Mean":,
-            # "Bwd IAT Std":,
-            # "Bwd IAT Max":,
-            #
-            # "Bwd IAT Min":,
-            # "Fwd PSH Flags":,
-            # "Bwd PSH Flags":,
-            # "Fwd URG Flags":,
-            #
-            # "Bwd URG Flags":,
-            # "Fwd Header Len":,
-            # "Bwd Header Len":,
-            # "Fwd Pkts/s":,
-            #
-            # "Bwd Pkts/s":,
-            # "Pkt Len Min":,
-            # "Pkt Len Max":,
-            # "Pkt Len Mean":,
-            #
-            # "Pkt Len Std":,
-            # "Pkt Len Var":,
-            # "FIN Flag Cnt":,
-            # "SYN Flag Cnt":,
-            #
-            # "RST Flag Cnt":,
-            # "PSH Flag Cnt":,
-            # "ACK Flag Cnt":,
-            # "URG Flag Cnt":,
-            #
-            # "CWE Flag Count":,
-            # "ECE Flag Cnt":,
-            # "Down/Up Ratio":,
-            # "Pkt Size Avg":,
-            #
-            # "Fwd Seg Size Avg":,
-            # "Bwd Seg Size Avg":,
-            # "Fwd Byts/b Avg":,
-            #
-            # "Fwd Pkts/b Avg":,
-            # "Fwd Blk Rate Avg":,
-            # "Bwd Byts/b Avg":,
-            #
-            # "Bwd Pkts/b Avg":,
-            # "Bwd Blk Rate Avg":,
-            # "Subflow Fwd Pkts":,
-            #
-            # "Subflow Fwd Byts":,
-            # "Subflow Bwd Pkts":,
-            # "Subflow Bwd Byts":,
-            #
-            # "Init Fwd Win Byts":,
-            # "Init Bwd Win Byts":,
-            # "Fwd Act Data Pkts":,
-            #
-            # "Fwd Seg Size Min":,
-            # "Active Mean":,
-            # "Active Std":,
-            # "Active Max":,
-            #
-            # "Active Min":,
-            # "Idle Mean":,
-            # "Idle Std":,
-            # "Idle Max":,
-            # "Idle Min":,
-            # "Label"
         }
 
 
 cache_flows = {}
-
+cached_groups = {}
 block_flows = []
 
-save_duration = 5
-detect_duration = 5
+save_duration = 10
+detect_duration = 10
 last_saved = time.time()
 last_detected = time.time()
 
 with open(
-        'models/best_model.pkl',
+        'models/best_flow_model.pkl',
         'rb') as f:
-    model = pickle.load(f)
+    flow_model = pickle.load(f)
 
 with open(
-        'models/scaler.pkl',
+        'models/flow_scaler.pkl',
         'rb') as f:
-    scaler = pickle.load(f)
+    flow_scaler = pickle.load(f)
+
+with open(
+        'models/best_group_model.pkl',
+        'rb') as f:
+    group_model = pickle.load(f)
+
+with open(
+        'models/group_scaler.pkl',
+        'rb') as f:
+    group_scaler = pickle.load(f)
 
 ensure_csv_header()
-features_col = [
-    # "Flow Duration",
-    # "Active Mean","Idle Mean", "Tot Fwd Pkts","TotLen Fwd Pkts",
-    # "Flow Pkts/s","Flow Byts/s"
-    # "Flow ID",
+
+group_features_col = [
+    "total_src_ips",
+    "flow_count",
+    "Tot Fwd Pkts",
+    "Tot Bwd Pkts",
+    "TotLen Fwd Pkts",
+    "TotLen Bwd Pkts",
+    "Flow Pkts/s",
+    "Flow Byts/s",
+    "Flow Duration",
+    "total_pkts",
+    "total_bytes",
+    "pkts_per_src_ip",
+    "bytes_per_src_ip",
+    "Group ID",
+    "Src IPs",
+    "Src Port",
+    "Dst IP",
+    "Dst Port",
+    "Protocol",
+    "Timestamp",
+]
+
+flow_features_col = [
     "Src IP",
     "Flow ID",
     "Src Port",
     "Dst IP",
     "Dst Port",
     "Protocol",
-    # "Timestamp",
     "Flow Duration",
     "Tot Fwd Pkts",
     "Tot Bwd Pkts",
@@ -355,13 +410,58 @@ for msg in consumer:
     elif rev_key in cache_flows:
         flow = cache_flows[rev_key]
     else:
-        flow = FlowCached(flow_id=flow_id, start_time=flow_msg.time_flow_start_ns, forward_src=ip_src, src_ip=ip_src,
+        flow = FlowCached(flow_id=flow_id, start_time=flow_msg.time_flow_start_ns, forward_src=ip_src,
+                          src_ip=ip_src,
                           dst_ip=ip_dst, src_port=src_port, dst_port=dst_port, protocol=flow_msg.proto)
         cache_flows[flow_id] = flow
 
     direction = 'fwd' if ip_src == flow.forward_src else 'bwd'
 
-    flow.update(direction, flow_msg.packets, None, flow_msg.time_flow_start_ns)
+    flow.update(direction, flow_msg.bytes, None, flow_msg.time_flow_start_ns)
+
+    group_id = get_group_id(
+        ip_dst=ip_dst,
+        dst_port=dst_port,
+        proto=flow_msg.proto,
+    )
+
+    if group_id not in cached_groups:
+        fwd_group = GroupFlowCached(
+            group_id=group_id,
+            start_time=flow_msg.time_flow_start_ns,
+            forward_src=ip_src,
+            dst_ip=ip_dst,
+            src_port=src_port,
+            dst_port=dst_port,
+            protocol=flow_msg.proto
+        )
+        cached_groups[group_id] = fwd_group
+    else:
+        fwd_group = cached_groups[group_id]
+
+    fwd_group.update(ip_src, src_port, "fwd", flow_msg.bytes, None, flow_msg.time_flow_start_ns)
+
+    rev_group_id = get_group_id(
+        ip_dst=ip_src,
+        dst_port=src_port,
+        proto=flow_msg.proto,
+    )
+
+    if rev_group_id not in cached_groups:
+        bwd_group = GroupFlowCached(
+            group_id=rev_group_id,
+            start_time=flow_msg.time_flow_start_ns,
+            forward_src=ip_dst,
+            dst_ip=ip_src,
+            src_port=dst_port,
+            dst_port=src_port,
+            protocol=flow_msg.proto
+        )
+        cached_groups[rev_group_id] = bwd_group
+    else:
+        bwd_group = cached_groups[rev_group_id]
+
+    bwd_group.update(ip_src, src_port, "bwd", flow_msg.bytes, None, flow_msg.time_flow_start_ns)
 
     # build human-readable dict
     # d = flow.get_features()
@@ -382,47 +482,142 @@ for msg in consumer:
     #
     #     last_saved = time.time()
 
-    if time.time() - last_detected > save_duration:
+    if time.time() - last_detected > detect_duration:
         features = []
-        for flow_id, saved_flow in cache_flows.items():
-            if saved_flow.flow_packets > 1:
-                data = saved_flow.get_features()
+
+        # group id
+        for fwd_group, saved_group in cached_groups.items():
+            if saved_group.flow_packets > 1:
+                data = saved_group.get_features()
                 # Only include the columns specified in features_col
-                features.append({col: data[col] for col in features_col if col in data})
+                features.append(data)
 
         if not features:
             continue
 
-        X = pd.DataFrame(features)[[col for col in features_col if col not in ["Flow ID", "Src IP", "Dst IP"]]]
-        X = scaler.transform(X)
-        y = model.predict(X)
+        # X = pd.DataFrame(features)[["Flow Duration","Tot Fwd Pkts","Tot Bwd Pkts","TotLen Fwd Pkts","TotLen Bwd Pkts","Flow Byts/s","Flow Pkts/s","total_src_ips","flow_count","total_pkts","total_bytes","pkts_per_src_ip","bytes_per_src_ip"]]
+        X = pd.DataFrame(features)
+        print("Features", features)
 
-        print("Prediction %s", y)
+        drop_cols = ["Group ID", "Src IPs", "Src Port", "Dst IP",
+                     "Dst Port", "Protocol", "Timestamp"]
+
+        X = X.drop(columns=drop_cols)
+
+        X = group_scaler.transform(X)
+        y = group_model.predict(X)
 
         for i, yi in enumerate(y):
+            if yi == 'Normal':
+                print("Normal")
+                print("Group ID", features[i]["Group ID"])
+                print("Info", features[i])
+
             if yi != 'Normal':
-                print("Attack Detected: %s", yi)
+                print("Attack Detected: ", yi)
 
                 xi = features[i]
 
-                flow_id = xi["Flow ID"]
-                print("Detected flow: %s", flow_id)
+                group_id = xi["Group ID"]
+                print("Detected malicious group id: %s", group_id)
 
-                flow_tuple = (
-                    xi["Src IP"], xi["Dst IP"],
-                    xi["Src Port"], xi["Dst Port"]
-                )
-                proto = xi["Protocol"]  # numeric 1/6/17 …
+                group_flows = []
 
-                block_flow(flow_tuple, proto)
-                print("Blocked malicious flow", flow_tuple, proto)
-                block_flows.append((flow_tuple, proto))
+                # detect that group flows
+                for src_ip, src_port in xi["Src IPs"]:
+                    flow_id = get_flow_id(
+                        src_ip, src_port,
+                        xi["Dst IP"], xi["Dst Port"],
+                        xi["Protocol"]
+                    )
 
-                # Remove the flow from cache_flows dictionary
-                del cache_flows[flow_id]  # Use the flow_id of the detected attack
+                    if flow_id in cache_flows:
+                        group_flows.append(cache_flows[flow_id].get_features())
 
-                # Alert the attack using the alerter
-                alerter.handle_detection(flow_id, yi, xi)
+                if not group_flows:
+                    continue
 
+                drop_cols = [
+                    "Flow ID",
+                    "Src IP",
+                    "Dst IP",
+                    "Timestamp"]
+                flows_X = pd.DataFrame(group_flows)
+
+                flows_X = flows_X.drop(columns=drop_cols)
+
+                flows_X = flow_scaler.transform(flows_X)
+
+                flows_y = flow_model.predict(flows_X)
+
+                for j, flow_yi in enumerate(flows_y):
+                    print("Flow prediction", flow_yi)
+                    if flow_yi == yi:
+                        flow_xi = features[j]
+                        flow_id = flow_xi["Flow ID"]
+                        print("Detected malicious flow: %s", flow_id)
+
+                        flow_tuple = (
+                            flow_xi["Src IP"], flow_xi["Dst IP"],
+                            flow_xi["Src Port"], flow_xi["Dst Port"]
+                        )
+                        proto = flow_xi["Protocol"]
+
+                        # block_flow(flow_tuple, proto)
+                        print("Blocked malicious flow", flow_tuple, proto)
+                        block_flows.append((flow_tuple, proto))
+
+                        # Alert the attack using the alerter
+                        alerter.handle_detection(flow_id, yi, xi)
+
+        cache_flows = {}
+        cached_groups = {}
         last_detected = time.time()
+
+        # # flow detection
+        # for flow_id, saved_flow in cache_flows.items():
+        #     if saved_flow.flow_packets > 1:
+        #         data = saved_flow.get_features()
+        #         # Only include the columns specified in features_col
+        #         features.append({col: data[col] for col in flow_features_col if col in data})
+        #
+        # if not features:
+        #     continue
+        #
+        # X = pd.DataFrame(features)[[col for col in flow_features_col if col not in ["Flow ID", "Src IP", "Dst IP"]]]
+        # X = scaler.transform(X)
+        # y = model.predict(X)
+        #
+        # print("Prediction %s", y)
+        #
+        # for i, yi in enumerate(y):
+        #     if yi != 'Normal':
+        #         print("Attack Detected: %s", yi)
+        #
+        #         xi = features[i]
+        #
+        #         flow_id = xi["Flow ID"]
+        #         print("Detected flow: %s", flow_id)
+        #
+        #         flow_tuple = (
+        #             xi["Src IP"], xi["Dst IP"],
+        #             xi["Src Port"], xi["Dst Port"]
+        #         )
+        #         proto = xi["Protocol"]  # numeric 1/6/17 …
+        #
+        #         block_flow(flow_tuple, proto)
+        #         print("Blocked malicious flow", flow_tuple, proto)
+        #         block_flows.append((flow_tuple, proto))
+        #
+        #         # Remove the flow from cache_flows dictionary
+        #         del cache_flows[flow_id]  # Use the flow_id of the detected attack
+        #
+        #         # Alert the attack using the alerter
+        #         alerter.handle_detection(flow_id, yi, xi)
+        #
+        # last_detected = time.time()
+        #
+        # # flush cached
+        # cache_flows = {}
+
         # CSV append (only selected columns)
