@@ -155,19 +155,21 @@ class GroupFlowCached:
         bytes_per_sec = ((self.tot_fwd_bytes + self.tot_bwd_bytes) / (duration / 1e6)) if duration > 0 else 0
         # bytes_per_sec = ((self.tot_fwd_bytes + self.tot_bwd_bytes) / 10)
 
-        pkts_per_src_ip = self.tot_pkts/ self.src_ip_counts if self.src_ip_counts > 0 else 0
+        pkts_per_src_ip = self.tot_pkts / self.src_ip_counts if self.src_ip_counts > 0 else 0
         bytes_per_src_ip = self.tot_bytes / self.src_ip_counts if self.src_ip_counts > 0 else 0
         return {
             "total_src_ips": self.src_ip_counts,
             "flow_count": self.tot_pkts,
             "Tot Fwd Pkts": self.tot_fwd_pkts,
-            "Tot Bwd Pkts": self.tot_bwd_pkts,
+            # "Tot Bwd Pkts": self.tot_bwd_pkts,
+            "Tot Bwd Pkts": 0,
             "TotLen Fwd Pkts": self.tot_fwd_bytes,
-            "TotLen Bwd Pkts": self.tot_bwd_bytes,
+            # "TotLen Bwd Pkts": self.tot_bwd_bytes,
+            "TotLen Bwd Pkts": 0,
             "Flow Pkts/s": pkts_per_sec,
             "Flow Byts/s": bytes_per_sec,
-            # "Flow Duration": duration,
-            "Flow Duration": 5,
+            "Flow Duration": duration,
+            # "Flow Duration": 5,
             "total_pkts": self.tot_pkts,
             "total_bytes": self.tot_bytes,
             "pkts_per_src_ip": pkts_per_src_ip,
@@ -295,9 +297,9 @@ class FlowCached:
 cache_flows = {}
 cached_groups = {}
 block_flows = []
-
-save_duration = 10
-detect_duration = 10
+archived_groups = {}
+save_duration = 5
+detect_duration = 5
 last_saved = time.time()
 last_detected = time.time()
 
@@ -372,7 +374,7 @@ flow_features_col = [
 
 # Initialize the alerter
 alerter = AIAttackAlerter(
-    pushgateway_url=os.environ.get('PUSHGATEWAY_URL', 'localhost:9091'),
+    pushgateway_url=os.environ.get('PUSHGATEWAY_URL', 'localhost:9001'),
     loki_url=os.environ.get('LOKI_URL', 'http://localhost:3100'))
 
 # ignore if the flow is empty or already blocked
@@ -385,6 +387,10 @@ for msg in consumer:
 
     ip_src = bytes_to_ip(flow_msg.src_addr)
     ip_dst = bytes_to_ip(flow_msg.dst_addr)
+
+    if ip_src.startswith("ff") or ip_dst.startswith("ff"):
+        # Ignore multicast addresses
+        continue
 
     flow_tuple = (
         ip_src, ip_dst,
@@ -417,7 +423,7 @@ for msg in consumer:
 
     direction = 'fwd' if ip_src == flow.forward_src else 'bwd'
 
-    flow.update(direction, flow_msg.bytes, None, flow_msg.time_flow_start_ns)
+    flow.update(direction, flow_msg.packets, None, flow_msg.time_flow_start_ns)
 
     group_id = get_group_id(
         ip_dst=ip_dst,
@@ -425,7 +431,17 @@ for msg in consumer:
         proto=flow_msg.proto,
     )
 
-    if group_id not in cached_groups:
+    rev_group_id = get_group_id(
+        ip_dst=ip_src,
+        dst_port=src_port,
+        proto=flow_msg.proto,
+    )
+
+    direction = "fwd"
+    if rev_group_id in archived_groups:
+        continue
+
+    if group_id not in cached_groups and rev_group_id not in cached_groups:
         fwd_group = GroupFlowCached(
             group_id=group_id,
             start_time=flow_msg.time_flow_start_ns,
@@ -436,32 +452,35 @@ for msg in consumer:
             protocol=flow_msg.proto
         )
         cached_groups[group_id] = fwd_group
-    else:
+    elif group_id in cached_groups:
         fwd_group = cached_groups[group_id]
+    elif rev_group_id  in cached_groups:
+        fwd_group = cached_groups[rev_group_id]
+        direction = "bwd"
 
     fwd_group.update(ip_src, src_port, "fwd", flow_msg.bytes, None, flow_msg.time_flow_start_ns)
 
-    rev_group_id = get_group_id(
-        ip_dst=ip_src,
-        dst_port=src_port,
-        proto=flow_msg.proto,
-    )
-
-    if rev_group_id not in cached_groups:
-        bwd_group = GroupFlowCached(
-            group_id=rev_group_id,
-            start_time=flow_msg.time_flow_start_ns,
-            forward_src=ip_dst,
-            dst_ip=ip_src,
-            src_port=dst_port,
-            dst_port=src_port,
-            protocol=flow_msg.proto
-        )
-        cached_groups[rev_group_id] = bwd_group
-    else:
-        bwd_group = cached_groups[rev_group_id]
-
-    bwd_group.update(ip_src, src_port, "bwd", flow_msg.bytes, None, flow_msg.time_flow_start_ns)
+    # rev_group_id = get_group_id(
+    #     ip_dst=ip_src,
+    #     dst_port=src_port,
+    #     proto=flow_msg.proto,
+    # )
+    #
+    # if rev_group_id not in cached_groups:
+    #     bwd_group = GroupFlowCached(
+    #         group_id=rev_group_id,
+    #         start_time=flow_msg.time_flow_start_ns,
+    #         forward_src=ip_dst,
+    #         dst_ip=ip_src,
+    #         src_port=dst_port,
+    #         dst_port=src_port,
+    #         protocol=flow_msg.proto
+    #     )
+    #     cached_groups[rev_group_id] = bwd_group
+    # else:
+    #     bwd_group = cached_groups[rev_group_id]
+    #
+    # bwd_group.update(ip_src, src_port, "bwd", flow_msg.bytes, None, flow_msg.time_flow_start_ns)
 
     # build human-readable dict
     # d = flow.get_features()
@@ -489,6 +508,10 @@ for msg in consumer:
         for fwd_group, saved_group in cached_groups.items():
             if saved_group.flow_packets > 1:
                 data = saved_group.get_features()
+                # if any(ip.endswith(".128") for ip, _ in data["Src IPs"]):
+                #     print("Ignore")
+                #     continue
+
                 # Only include the columns specified in features_col
                 features.append(data)
 
@@ -552,26 +575,41 @@ for msg in consumer:
 
                 for j, flow_yi in enumerate(flows_y):
                     print("Flow prediction", flow_yi)
-                    if flow_yi == yi:
-                        flow_xi = features[j]
-                        flow_id = flow_xi["Flow ID"]
-                        print("Detected malicious flow: %s", flow_id)
+                    target_yi = None
+                    if yi == 'DoS' and (flow_yi == 'DDoS' or flow_yi == 'Normal' or flow_yi == 'DoS'):
+                        target_yi = "DoS"
+                    elif yi == 'DDoS' and flow_yi == 'DDoS':
+                        target_yi = "DDoS"
+                    elif yi == "Probe" or flow_yi == "Probe":
+                        target_yi = "Probe"
 
-                        flow_tuple = (
-                            flow_xi["Src IP"], flow_xi["Dst IP"],
-                            flow_xi["Src Port"], flow_xi["Dst Port"]
-                        )
-                        proto = flow_xi["Protocol"]
+                    if target_yi is None:
+                        continue
 
-                        # block_flow(flow_tuple, proto)
-                        print("Blocked malicious flow", flow_tuple, proto)
-                        block_flows.append((flow_tuple, proto))
+                    flow_xi = group_flows[j]
+                    flow_id = flow_xi["Flow ID"]
+                    print("Detected malicious flow: %s", flow_id)
 
-                        # Alert the attack using the alerter
-                        alerter.handle_detection(flow_id, yi, xi)
+                    flow_tuple = (
+                        flow_xi["Src IP"], flow_xi["Dst IP"],
+                        flow_xi["Src Port"], flow_xi["Dst Port"]
+                    )
+                    proto = flow_xi["Protocol"]
+
+                    block_flow(flow_tuple, proto)
+                    print("Blocked malicious flow", flow_tuple, proto)
+
+                    block_flows.append((flow_tuple, proto))
+
+                    # Alert the attack using the alerter
+                    alerter.handle_detection(flow_id, target_yi, flow_xi)
 
         cache_flows = {}
+
+        archived_groups = cached_groups
+
         cached_groups = {}
+
         last_detected = time.time()
 
         # # flow detection

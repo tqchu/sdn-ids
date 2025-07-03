@@ -48,7 +48,7 @@ fi
 goflow2_container_id=$(docker run -d --name goflow2 --network sdn-ids_default -p 6343:6343/udp truongquangchu/goflow2)
 echo "Goflow2 container ID: $goflow2_container_id"
 
-consumer_container_id=$(docker run -d --name ml_detector   --network sdn-ids_default   -v $(pwd)/flows:/app/flows   -e KAFKA_BOOTSTRAP_SERVERS=kafka:29092   -e PUSHGATEWAY_URL=pushgateway:9091   -e LOKI_URL=http://loki:3100 -e CONTROLLER_HOST=172.17.0.1 -e DPID=0000000c29bb448a truongquangchu/ml-detector)
+consumer_container_id=$(docker run -d --name ml_detector   --network sdn-ids_default   -v $(pwd)/flows:/app/flows   -e KAFKA_BOOTSTRAP_SERVERS=kafka:29092   -e PUSHGATEWAY_URL=pushgateway:9091   -e LOKI_URL=http://loki:3100 -e CONTROLLER_HOST=172.17.0.1 -e DPID=0000000c29bb448a truongquangchu/ml-detector-final)
 echo "ML Detector container ID: $consumer_container_id"
 
 sudo ovs-vsctl -- --id=@sflow create sflow agent=ens33     target=\"localhost:6343\" sampling=4 polling=10     -- set bridge br0 sflow=@sflow
