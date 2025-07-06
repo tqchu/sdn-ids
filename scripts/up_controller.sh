@@ -45,6 +45,12 @@ if $SNORT; then
   echo "[*] Snort is up."
 fi
 
+sudo ip link add veth-mininet type veth peer name veth-ovs
+sudo ip link set veth-mininet up
+sudo ip link set veth-ovs up
+
+sudo ovs-vsctl add-port br0 veth-ovs
+
 goflow2_container_id=$(docker run -d --name goflow2 --network sdn-ids_default -p 6343:6343/udp truongquangchu/goflow2)
 echo "Goflow2 container ID: $goflow2_container_id"
 

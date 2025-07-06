@@ -10,7 +10,7 @@ sudo ip addr add 198.51.100.1/24 dev ens33
 
 sudo ip link set ens33 up
 # sudo ip link set vmnet3 up
-
+sudo ip link del veth-ovs
 # sudo pkill snort
 docker stop goflow2
 docker rm goflow2
