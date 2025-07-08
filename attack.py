@@ -2,13 +2,13 @@ import sys
 import signal
 from mininet.topo import Topo
 from mininet.net import Mininet
-from mininet.node import RemoteController
+from mininet.node import RemoteController, OVSSwitch
 from mininet.log import setLogLevel
 from mininet.cli import CLI
 
 class NetworkTopo(Topo):
     def build(self):
-        s1 = self.addSwitch("s1", protocols="OpenFlow13")
+        s1 = self.addSwitch("s1", protocols="OpenFlow13", cls=OVSSwitch, dpid = "0000000c29bb448a")
         hosts = []
         for i in range(1, 10):
             h = self.addHost(f"h{i}", ip=f"198.51.100.{10 + i}/24", defaultRoute=None)
