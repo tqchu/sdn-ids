@@ -5,7 +5,9 @@ import requests
 
 ADD_ENDPOINT = f"http://{os.getenv('CONTROLLER_HOST','127.0.0.1')}:8082/stats/flowentry/add"  # Ryu default
 DELETE_ENDPOINT = "http://127.0.0.1:8082/stats/flowentry/delete_strict"  # Ryu default
-DPID     = os.getenv("DPID",345052807170)            # bridge datapath-id
+
+DPID_STR     = os.getenv("DPID","0000005056c00002")            # bridge datapath-id
+DPID = int(DPID_STR, 16)  # convert to integer
 TABLE_ID = 0            # table where you drop; adjust if using multi-table
 DROP_PRIORITY = 600     # higher than normal-allow rules
 
