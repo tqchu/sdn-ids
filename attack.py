@@ -8,7 +8,7 @@ from mininet.cli import CLI
 
 class NetworkTopo(Topo):
     def build(self):
-        s1 = self.addSwitch("s1", protocols="OpenFlow13", cls=OVSSwitch, dpid = "0000000c29bb448a")
+        s1 = self.addSwitch("s1", protocols="OpenFlow13", cls=OVSSwitch, dpid="0000000c29bb448a")
         hosts = []
         for i in range(1, 10):
             h = self.addHost(f"h{i}", ip=f"198.51.100.{10 + i}/24", defaultRoute=None)
@@ -30,25 +30,30 @@ def main():
     s1.attach('veth-mininet')
     print("[*] Attached veth-mn to s1 for integration with the real/VM network via OVS bridge.")
 
-    # Optionally up interfaces (should be up already)
+    # Ensure interfaces are up
     for i in range(1, 10):
-        net[f"h{i}"].cmd("ip link set dev h{}-eth0 up".format(i))
+        net[f"h{i}"].cmd(f"ip link set dev h{i}-eth0 up")
 
-    # Attack logic
-    if len(sys.argv) == 2:
-        print("[*] Attack mode: All hosts except victim will attack")
+    if len(sys.argv) == 3:
+        attack_cmd = sys.argv[1]
+        target_ip = sys.argv[2]
+        print(f"[*] Attack mode: All hosts except target ({target_ip}) will run:\n    {attack_cmd}")
         processes = []
 
         for i in range(1, 10):
             host = net[f"h{i}"]
-            cmd = sys.argv[1]
+            host_ip = f"198.51.100.{10 + i}"
+            if host_ip == target_ip:
+                print(f"[-] Skipping {host.name} (target)")
+                continue
+
             print(f"[+] {host.name} running: {cmd}")
             pid_output = host.cmd(f"{cmd} & echo $!")
             pid_str = pid_output.strip().splitlines()[-1]
             try:
                 pid = int(pid_str)
             except ValueError:
-                print(f"Failed to get PID from output: {pid_output}")
+                print(f"[!] Failed to get PID from output: {pid_output}")
                 continue
             processes.append((host, pid))
 
@@ -63,7 +68,7 @@ def main():
         print("[*] Attack running. Press Ctrl+C to stop.")
         signal.pause()
     else:
-        print("[*] Custom 5-host flat topology ready, starting Mininet CLI...")
+        print("[*] Custom 9-host flat topology ready, starting Mininet CLI...")
         CLI(net)
         net.stop()
 
