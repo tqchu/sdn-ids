@@ -40,6 +40,7 @@ def main():
         print(f"[*] Attack mode: All hosts except target ({target_ip}) will run:\n    {attack_cmd}")
         processes = []
 
+        cmd = f"{attack_cmd} {target_ip}"
         for i in range(1, 10):
             host = net[f"h{i}"]
             host_ip = f"198.51.100.{10 + i}"
