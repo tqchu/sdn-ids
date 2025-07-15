@@ -8,7 +8,7 @@ from mininet.cli import CLI
 
 class NetworkTopo(Topo):
     def build(self):
-        s1 = self.addSwitch("s1", protocols="OpenFlow13", cls=OVSSwitch, dpid="0000000c29bb448a")
+        s1 = self.addSwitch("s1", protocols="OpenFlow13", cls=OVSSwitch, dpid="0000000000000001")
         hosts = []
         for i in range(1, 10):
             h = self.addHost(f"h{i}", ip=f"198.51.100.{10 + i}/24", defaultRoute=None)
